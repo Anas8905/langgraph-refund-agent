@@ -99,15 +99,125 @@ No payment call happens before approval (a test asserts it).
 | `outside-window`: A1003, delivered 45 days ago | policy deny → reply with the reason |
 | `no-order-number` | parse → reply asking for the order number |
 
-<!-- EXAMPLE-RUNS: replace with real output from `uv run run.py` -->
+Real output from `uv run run.py` (OpenAI `gpt-4.1-mini`).
+
+### Payment times out after the refund went through
+
+The refund call times out, so its outcome is unknown. `confirm_refund` finds the refund in the
+ledger by idempotency key, so there's no second payment call, and the customer is only told
+"refunded" once the ledger confirms it.
 
 ```text
-(paste output of: uv run run.py --scenario payment-timeout)
+[payment-timeout] customer: Refund A1004 please, they're the wrong size.
+
+── parse_request ───────────────────────────────────────────────────
+   request:          {'is_refund': True, 'order_id': 'A1004', 'reason': 'wrong size'}
+
+── lookup_order ────────────────────────────────────────────────────
+   order_lookup:     found
+   order:            {'id': 'A1004', 'item': 'Running shoes', 'total': 89.0, 'status': 'delivered',
+                     'delivered_on': '2026-11-14', 'final_sale': False}
+
+── check_policy ────────────────────────────────────────────────────
+   decision:         auto_approve
+   decision_reason:  delivered 3 days ago and under $100
+
+── issue_refund ────────────────────────────────────────────────────
+   refund_attempts:  1
+   refund_status:    unknown
+   tool_errors:      ['payments.refund attempt 1: no response after 10s; outcome unknown']
+
+── confirm_refund ──────────────────────────────────────────────────
+   refund_status:    succeeded
+   refund_id:        re_0001
+   outcome:          refunded
+
+── compose_reply ───────────────────────────────────────────────────
+   reply:            We've processed a refund of $89.00 for your Running shoes. Your refund ID is
+                     re_0001. If you have any other questions, feel free to ask!
+
+══ outcome [run-723fe3ea] refunded  refund_id=re_0001  ticket=None
+We've processed a refund of $89.00 for your Running shoes. Your refund ID is re_0001. If you have
+any other questions, feel free to ask!
 ```
 
+### Orders API down: retried with backoff, then escalated
+
 ```text
-(paste output of: uv run run.py --scenario large-refund, then --approve RUN_ID)
+[orders-down] customer: Please refund order A1001, it arrived broken.
+
+── parse_request ───────────────────────────────────────────────────
+   request:          {'is_refund': True, 'order_id': 'A1001', 'reason': 'arrived broken'}
+
+── lookup_order ────────────────────────────────────────────────────
+   order_lookup:     unavailable
+   tool_errors:      ['orders.get attempt 1/3: orders service returned 503', 'orders.get attempt
+                     2/3: orders service returned 503', 'orders.get attempt 3/3: orders service
+                     returned 503']
+
+── escalate ────────────────────────────────────────────────────────
+   ticket_id:        T-1001
+   outcome:          escalated
+
+── compose_reply ───────────────────────────────────────────────────
+   reply:            A teammate will follow up with you shortly regarding your issue. Your ticket ID
+                     is T-1001. Thank you for your patience!
+
+══ outcome [run-28100f8e] escalated  refund_id=None  ticket=T-1001
+A teammate will follow up with you shortly regarding your issue. Your ticket ID is T-1001. Thank you
+for your patience!
 ```
+
+### Large refund: paused in one process, approved from another
+
+```text
+$ uv run run.py --scenario large-refund
+[large-refund] customer: I'd like a refund for order A1002, the coat doesn't fit.
+
+── parse_request ───────────────────────────────────────────────────
+   request:          {'is_refund': True, 'order_id': 'A1002', 'reason': "coat doesn't fit"}
+
+── lookup_order ────────────────────────────────────────────────────
+   order_lookup:     found
+   order:            {'id': 'A1002', 'item': 'Wool overcoat', 'total': 249.0, 'status': 'delivered',
+                     'delivered_on': '2026-11-07', 'final_sale': False}
+
+── check_policy ────────────────────────────────────────────────────
+   decision:         needs_approval
+   decision_reason:  $249.00 is over the $100 auto-approve limit
+
+── __interrupt__ ───────────────────────────────────────────────────
+   PAUSED:           waiting for human approval
+   order_id:         A1002
+   item:             Wool overcoat
+   amount:           249.0
+   customer_reason:  coat doesn't fit
+   why_review:       $249.00 is over the $100 auto-approve limit
+
+   resume later with: uv run run.py --approve run-efe6f08d   (or --reject run-efe6f08d)
+
+$ uv run run.py --approve run-efe6f08d
+[reviewer] approve run-efe6f08d 
+
+── request_approval ────────────────────────────────────────────────
+   approval:         approved
+
+── issue_refund ────────────────────────────────────────────────────
+   refund_attempts:  1
+   refund_status:    succeeded
+   refund_id:        re_0001
+   outcome:          refunded
+
+── compose_reply ───────────────────────────────────────────────────
+   reply:            We have processed a refund of $249.00 for your Wool overcoat. Your refund ID is
+                     re_0001. If you have any other questions, feel free to ask!
+
+══ outcome [run-efe6f08d] refunded  refund_id=re_0001  ticket=None
+We have processed a refund of $249.00 for your Wool overcoat. Your refund ID is re_0001. If you have
+any other questions, feel free to ask!
+```
+
+Approving the same run again is refused with `Run run-efe6f08d is not waiting for approval.`
 
 ## Tests
 
