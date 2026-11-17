@@ -1,0 +1,24 @@
+[project]
+name = "langgraph-refund-agent"
+version = "0.1.0"
+description = "LangGraph refund agent: tool-failure handling, human approval via interrupt(), idempotent payments, SQLite checkpoints."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.0",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "langchain-core>=1.0",
+    "langchain-openai>=1.0",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
